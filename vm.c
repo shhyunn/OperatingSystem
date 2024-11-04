@@ -6,7 +6,12 @@
 #include "mmu.h"
 #include "proc.h"
 #include "elf.h"
+#include "spinlock.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
 
+struct mmap_area mmap_area_arr[64] = {0};
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
 
@@ -183,7 +188,7 @@ void
 inituvm(pde_t *pgdir, char *init, uint sz)
 {
   char *mem;
-
+  cprintf("start init uvm...\n");
   if(sz >= PGSIZE)
     panic("inituvm: more than a page");
   mem = kalloc();
@@ -319,7 +324,7 @@ copyuvm(pde_t *pgdir, uint sz)
   pte_t *pte;
   uint pa, i, flags;
   char *mem;
-
+	cprintf("start copyuvm...\n");
   if((d = setupkvm()) == 0)
     return 0;
   for(i = 0; i < sz; i += PGSIZE){
@@ -392,3 +397,261 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
 //PAGEBREAK!
 // Blank page.
 
+uint mmap(uint addr, int length, int prot, int flags, int fd, int offset) {
+
+  //initialize variables
+  int base_addr;
+  struct proc *p;
+  struct file *f;
+  pde_t *d;
+  char *mem;
+  uint pnum, mid;
+
+  //process & page table
+  p = myproc();
+  d = p->pgdir;
+
+  //error case
+  if (((flags & MAP_ANONYMOUS) != MAP_ANONYMOUS) && fd == -1) {
+     return -1;
+  } else if ((fd != -1) && (((prot & PROT_READ) != p->ofile[fd]->readable))) {
+    return -1;
+  } else if (fd != -1 && ((prot & PROT_WRITE) == PROT_WRITE)) {
+	if (p->ofile[fd]->writable == 0)
+		return -1; 	  
+  } 
+  if ((addr % PGSIZE) != 0) {
+	  return 0;
+  }
+  //normal case
+ 
+  for (mid = 0; mid < 64; mid++) {
+    if (mmap_area_arr[mid].addr == 0) { //empty mmap area pointer
+      mmap_area_arr[mid].f = p->ofile[fd];
+      mmap_area_arr[mid].p = p;
+      mmap_area_arr[mid].addr = MMAPBASE + addr;
+      mmap_area_arr[mid].length = length;
+      mmap_area_arr[mid].offset = offset;
+      mmap_area_arr[mid].prot = prot;
+      mmap_area_arr[mid].flags = flags;
+      //cprintf("original : %d\n", mmap_area_arr[mid].addr);
+      break;
+    }
+  }
+
+  //deal with flags
+  base_addr = MMAPBASE + addr;
+  if (flags == 0) { //if flag is 0, no map populate, no anonymous. so only record map areas.
+    return base_addr;
+
+  } else if (flags & MAP_POPULATE) { // if flag is map populate, connect virtual memory and physical memory with page table.
+    for (pnum = 0; pnum < length; pnum += PGSIZE) {
+      mem = kalloc();
+      if (mem == 0) { //failed to allocate page
+	return -1;
+
+      }
+
+      if (flags & MAP_ANONYMOUS) { //if flag is map populate and map anonymous, physical page is set 0.
+        memset(mem, 0, PGSIZE);
+
+      } else {
+        //read file data from file pointer
+        f = p->ofile[fd] ;
+        f->off = offset;
+        fileread(f, mem, PGSIZE);
+      }
+
+      //mapping virtual address and physical pages
+	int pte_flag;
+	
+	//cprintf("flag result is %d\n", prot & PROT_READ);
+	
+        if (prot & PROT_WRITE)
+		pte_flag = PTE_W | PTE_P | PTE_U;
+	else
+		pte_flag = PTE_P | PTE_U;	
+	
+	//cprintf("map addr : %x", base_addr+pnum);
+	
+	//cprintf("pte_flag : %d\n", pte_flag);
+	//cprintf("i'm mappages///\n");
+      if (mappages(d, (void*)(base_addr + pnum), PGSIZE, V2P(mem), pte_flag) < 0) {
+          kfree(mem);
+          return -1;
+      }
+
+      //cprintf("mem addr : %x\n", mem);
+    }
+  }
+
+  return base_addr;
+
+}
+
+void forkmmap(struct proc *p1, struct proc *p2) {
+	//cprintf("enter forkmmap..\n");	
+	//p1 : curproc, p2 : np
+	uint mid;
+	int fparr[64] = {-1};
+	int fpid = 0;
+	int fzarr[64] = {-1};
+	int fzid = 0;
+	//cprintf("first addr is %d \n", mmap_area_arr[0].addr);
+
+	for (mid = 0; mid < 64; mid++) {
+		if (mmap_area_arr[mid].addr != 0 && mmap_area_arr[mid].p == p1) {
+			fparr[fpid] = mid;
+			fpid++;
+
+		} else if (mmap_area_arr[mid].addr == 0) {
+			fzarr[fzid] = mid;
+			fzid++;	
+		}
+				
+	}
+	//cprintf("fp is : %d, fz is : %d\n", fp, fz);
+	int fz = 0;
+	int fp = 0;
+	if (fparr[0] != -1 && fzarr[0] != -1) {
+	    	for (int zid = 0, pid = 0; zid < fzid && pid < fpid; zid++, pid++) {
+			fz = fzarr[zid];
+			fp = fparr[pid];
+			mmap_area_arr[fz].f = mmap_area_arr[fp].f;
+			mmap_area_arr[fz].addr = mmap_area_arr[fp].addr;
+			mmap_area_arr[fz].length = mmap_area_arr[fp].length;
+			mmap_area_arr[fz].offset = mmap_area_arr[fp].offset;
+			mmap_area_arr[fz].prot = mmap_area_arr[fp].prot;
+			mmap_area_arr[fz].flags = mmap_area_arr[fp].flags;
+			mmap_area_arr[fz].p = p2;
+			
+			struct mmap_area mmarea = mmap_area_arr[fz];
+			
+			if (mmarea.flags & MAP_POPULATE) {
+				char* mem;
+				for (uint pnum = 0; pnum < mmarea.length; pnum += PGSIZE) {
+					mem = kalloc();
+					if (mmarea.flags & MAP_ANONYMOUS) {
+						memset(mem, 0, PGSIZE);	
+					} else {
+						struct file *f = mmarea.f;
+						f->off = mmarea.offset;
+						fileread(f, mem, PGSIZE);	
+					}
+
+					int pte_flag;
+					if (mmarea.prot & PROT_WRITE)
+						pte_flag = PTE_W | PTE_P | PTE_U;
+					else
+						pte_flag = PTE_P | PTE_U;
+
+					if (mappages(mmarea.p->pgdir, (void*)(mmarea.addr + pnum), PGSIZE, V2P(mem), pte_flag) < 0)
+						kfree(mem);
+				//cprintf("fork success...\n");
+					
+				}	
+			}
+		}
+	}
+	return;	
+}
+
+int munmap(int addr) {
+	uint mid;
+	if (((addr-0x40000000) % PGSIZE) != 0) {
+		return 0;
+	}
+
+	//cprintf("hi ~ I'm munmap!\n");
+	for (mid = 0; mid < 64; mid++) {
+		if (mmap_area_arr[mid].addr != 0) {
+		
+			struct mmap_area mmarea = mmap_area_arr[mid];
+			if (mmarea.addr == addr && mmarea.p == myproc()) {
+				//cprintf("addr : %x\n", addr);
+				memset(&mmap_area_arr[mid], 0, sizeof(mmap_area_arr[mid]));
+				struct proc *p = mmarea.p;
+				pde_t *d = p->pgdir;
+				int base_addr = addr;
+				pte_t *pte;
+
+				for (int pnum = 0; pnum < mmarea.length; pnum += PGSIZE) {
+					pte = walkpgdir(d, (void*)(base_addr+pnum), 0);
+					if (*pte & PTE_P) {
+						uint pa = PTE_ADDR(*pte);
+						char* va = P2V(pa);
+						memset(va, 1, PGSIZE);
+						kfree(va);
+						
+						*pte = 0;
+					}		
+				}
+
+				return 1;			
+			}	
+		}		
+	}
+	//cprintf("I'm not exited..\n");	
+	return -1;
+}
+
+int pfhandler(struct trapframe *tf) {
+	uint fault_addr = rcr2();
+	//uint read = tf->err & 2;
+	uint write = (tf->err & 2) == 1;
+	uint mid;
+	//cprintf("i'm page fault handler..\n");
+	//cprintf("fault addr : %x\n", fault_addr);
+	for (mid = 0; mid < 64; mid++) {
+
+		if (mmap_area_arr[mid].addr != 0) {
+			struct mmap_area mmarea = mmap_area_arr[mid];
+
+			if (mmarea.addr <= fault_addr && fault_addr < (mmarea.addr + mmarea.length) && mmarea.p == myproc()) {
+				//cprintf("start addr : %x\n", mmarea.addr);
+				//cprintf("end addr : %x\n", mmarea.addr + mmarea.length);
+				if (write && !((mmarea.prot & PROT_WRITE) == PROT_WRITE))
+					return -1;
+				
+				int base_addr = fault_addr;
+				//cprintf("allocated\n");
+
+				char* mem = kalloc();
+				//cprintf("after allocated\n");
+				memset(mem, 0, PGSIZE);
+				//cprintf("mem setting..\n");
+				if (!(mmarea.flags & MAP_ANONYMOUS)) {
+					//cprintf("before file..\n");
+					struct file *f = mmarea.f;
+					f->off = mmarea.offset;
+					//cprintf("before before file..\n");
+					fileread(f, mem, PGSIZE);				
+					
+				}
+				pde_t *d = mmarea.p->pgdir;
+				//cprintf("after dic..\n");
+				//cprintf("page dic setting...\n");
+				int pte_flag;
+				if (mmarea.prot & PROT_WRITE)
+					pte_flag = PTE_W | PTE_P | PTE_U;	
+				else
+					pte_flag = PTE_P | PTE_U;
+				
+				//cprintf("before mappage\n");
+
+				if (mappages(d, (void*)base_addr, PGSIZE, V2P(mem), pte_flag) < 0) {
+					kfree(mem);
+					return -1;
+					
+				}
+				//cprintf("after mappage\n");
+				//cprintf("pf handler process succeed!!\n");
+
+				return 0;			
+			}
+		} 
+	}
+
+	
+	return -1;
+	}

@@ -20,7 +20,6 @@
 #define SYS_link   19
 #define SYS_mkdir  20
 #define SYS_close  21
-#define SYS_getpname  22
-#define SYS_getnice  23
-#define SYS_setnice  24
-#define SYS_ps  25
+#define SYS_mmap   22
+#define SYS_munmap  23
+#define SYS_freemem  24

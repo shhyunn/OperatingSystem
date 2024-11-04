@@ -68,6 +68,7 @@ char*           kalloc(void);
 void            kfree(char*);
 void            kinit1(void*, void*);
 void            kinit2(void*, void*);
+int		freemem(void);
 
 // kbd.c
 void            kbdintr(void);
@@ -120,11 +121,7 @@ void            userinit(void);
 int             wait(void);
 void            wakeup(void*);
 void            yield(void);
-int		getpname(int);
-int		getnice(int);
-int		setnice(int, int);
-void		ps(int);
-
+uint		mmap(uint, int, int ,int, int, int);
 
 // swtch.S
 void            swtch(struct context**, struct context*);
@@ -169,7 +166,6 @@ void            idtinit(void);
 extern uint     ticks;
 void            tvinit(void);
 extern struct spinlock tickslock;
-extern int 	totalticks;
 
 // uart.c
 void            uartinit(void);
@@ -191,6 +187,6 @@ void            switchuvm(struct proc*);
 void            switchkvm(void);
 int             copyout(pde_t*, uint, void*, uint);
 void            clearpteu(pde_t *pgdir, char *uva);
-
+int		munmap(int);
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))

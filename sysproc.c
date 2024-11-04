@@ -91,40 +91,55 @@ sys_uptime(void)
 }
 
 int
-sys_getpname(void)
+sys_mmap(void)
 {
-  int pid;
+	int temp_addr;
+	uint addr;
+	int length;
+	int prot;
+	int flags;
+	int fd;
+	int offset;
+	if (argint(0,&temp_addr) < 0) {
+		return -1;
+		} 
+	if (argint(1, &length) < 0) {
+		return -1;
+		
+		}
 
-  if (argint(0, &pid) < 0)
-    return -1;
-  return getpname(pid);
+	if (argint(2, &prot) < 0) {
+		return -1;
+		}
+
+	if (argint(3, &flags) < 0) {
+		return -1;
+		}
+
+	if (argint(4, &fd) < 0) {
+		return -1;
+		}
+
+	if (argint(5, &offset) < 0) {
+		return -1;
+		}
+	addr = (uint)temp_addr;
+
+	return mmap(addr, length, prot, flags, fd, offset);
+	}
+
+
+int
+sys_munmap(void) {
+	int addr;
+	
+	if (argint(0, &addr) < 0)
+		return -1;
+	
+	return munmap(addr);	
 }
 
 int
-sys_getnice(void)
-{
-	int pid;
-	if (argint(0, &pid) < 0)
-		return -1;
-	return getnice(pid);
-}
-
-int
-sys_setnice(void)
-{
-	int pid;
-	int value;
-	if (argint(0, &pid)<0 || argint(1, &value) < 0) 
-		return -1;
-	return setnice(pid, value);
-}
-
-int
-sys_ps(void)
-{
-	int pid;
-	if(argint(0, &pid) < 0)
-		return -1;
-	ps(pid);
-	return 0;
+sys_freemem(void) {
+	return freemem();	
 }
