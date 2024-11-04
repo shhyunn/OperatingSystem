@@ -26,10 +26,10 @@ main(void)
       printf(1, "init: fork failed\n");
       exit();
     }
-    if(pid == 0){
-	    printf(1, "before sh exec\n");
-      exec("sh", argv);
-      printf(1, "after sh exec\n");
+    if(pid == 0) {
+	    //printf(1, "before sh exec\n");
+      	exec("sh", argv);
+	//printf(1, "after sh exec\n");
       printf(1, "init: exec sh failed\n");
       exit();
     }

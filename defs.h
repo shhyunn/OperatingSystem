@@ -52,6 +52,8 @@ struct inode*   nameiparent(char*, char*);
 int             readi(struct inode*, char*, uint, uint);
 void            stati(struct inode*, struct stat*);
 int             writei(struct inode*, char*, uint, uint);
+void swapread(char* ptr, int blkno);
+void swapwrite(char* ptr, int blkno);
 
 // ide.c
 void            ideinit(void);
@@ -69,7 +71,13 @@ void            kfree(char*);
 void            kinit1(void*, void*);
 void            kinit2(void*, void*);
 int		freemem(void);
-
+void		lru_insert(char* mem, pde_t *pgdir, char* vaddr);
+void		lru_delete(char* mem, pde_t *pgdir, char* vaddr);
+char*		swapout(void);
+void		swapin(struct proc *p, uint);
+void		set_bitmap(int, int);
+int		find_bitmap(void);
+int		check_bitmap(int);
 // kbd.c
 void            kbdintr(void);
 
@@ -121,7 +129,6 @@ void            userinit(void);
 int             wait(void);
 void            wakeup(void*);
 void            yield(void);
-uint		mmap(uint, int, int ,int, int, int);
 
 // swtch.S
 void            swtch(struct context**, struct context*);
@@ -187,6 +194,5 @@ void            switchuvm(struct proc*);
 void            switchkvm(void);
 int             copyout(pde_t*, uint, void*, uint);
 void            clearpteu(pde_t *pgdir, char *uva);
-int		munmap(int);
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))

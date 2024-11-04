@@ -6,16 +6,17 @@
 #include "mmu.h"
 #include "proc.h"
 #include "elf.h"
-#include "spinlock.h"
-#include "sleeplock.h"
-#include "fs.h"
-#include "file.h"
+//#include "spinlock.h"
 
-struct mmap_area mmap_area_arr[64] = {0};
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
 
-// Set up CPU's kernel segment descriptors.
+extern struct page* page_lru_head;
+extern int num_lru_pages;
+extern struct spinlock lru_lock;
+extern char* bitmap;
+
+// set up CPU's kernel segment descriptors.
 // Run once on entry on each CPU.
 void
 seginit(void)
@@ -76,6 +77,7 @@ mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
     if(*pte & PTE_P)
       panic("remap");
     *pte = pa | perm | PTE_P;
+    
     if(a == last)
       break;
     a += PGSIZE;
@@ -137,6 +139,7 @@ setupkvm(void)
       freevm(pgdir);
       return 0;
     }
+
   return pgdir;
 }
 
@@ -185,16 +188,16 @@ switchuvm(struct proc *p)
 // Load the initcode into address 0 of pgdir.
 // sz must be less than a page.
 void
-inituvm(pde_t *pgdir, char *init, uint sz)
+inituvm(pde_t *pgdir, char *init, uint sz) //검토 완
 {
   char *mem;
-  cprintf("start init uvm...\n");
   if(sz >= PGSIZE)
     panic("inituvm: more than a page");
   mem = kalloc();
   memset(mem, 0, PGSIZE);
-  mappages(pgdir, 0, PGSIZE, V2P(mem), PTE_W|PTE_U);
+  mappages(pgdir, 0, PGSIZE, V2P(mem), PTE_W|PTE_U); //user page임
   memmove(mem, init, sz);
+  lru_insert(mem, pgdir, 0);
 }
 
 // Load a program segment into pgdir.  addr must be page-aligned
@@ -224,11 +227,11 @@ loaduvm(pde_t *pgdir, char *addr, struct inode *ip, uint offset, uint sz)
 // Allocate page tables and physical memory to grow process from oldsz to
 // newsz, which need not be page aligned.  Returns new size or 0 on error.
 int
-allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
+allocuvm(pde_t *pgdir, uint oldsz, uint newsz) //검토 완
 {
   char *mem;
   uint a;
-
+  //cprintf("start allocuvm...\n");
   if(newsz >= KERNBASE)
     return 0;
   if(newsz < oldsz)
@@ -243,13 +246,15 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
       return 0;
     }
     memset(mem, 0, PGSIZE);
-    if(mappages(pgdir, (char*)a, PGSIZE, V2P(mem), PTE_W|PTE_U) < 0){
+    if(mappages(pgdir, (char*)a, PGSIZE, V2P(mem), PTE_W|PTE_U) < 0){ //a라는 주소로 pgdir에 매핑, user page로 할당
       cprintf("allocuvm out of memory (2)\n");
       deallocuvm(pgdir, newsz, oldsz);
       kfree(mem);
       return 0;
     }
+    lru_insert(mem, pgdir, (char*)a);
   }
+  //cprintf("end allocuvm...\n");
   return newsz;
 }
 
@@ -258,29 +263,38 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
 // need to be less than oldsz.  oldsz can be larger than the actual
 // process size.  Returns the new process size.
 int
-deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
+deallocuvm(pde_t *pgdir, uint oldsz, uint newsz) //검토 완
 {
   pte_t *pte;
   uint a, pa;
-
+//cprintf("start deallocuvm...\n");
   if(newsz >= oldsz)
     return oldsz;
 
   a = PGROUNDUP(newsz);
   for(; a  < oldsz; a += PGSIZE){
     pte = walkpgdir(pgdir, (char*)a, 0);
-    if(!pte)
+
+    if(!pte) {//pte가 없으면..
       a = PGADDR(PDX(a) + 1, 0, 0) - PGSIZE;
-    else if((*pte & PTE_P) != 0){
-      pa = PTE_ADDR(*pte);
-      if(pa == 0)
+
+    } else if((*pte & PTE_P) != 0) { //pte_p가 1이라는 이야기..일반적인 케이스
+      pa = PTE_ADDR(*pte); //물리 주소 구하기
+      if(pa == 0) 
         panic("kfree");
-      char *v = P2V(pa);
+      char *v = P2V(pa); //가상 주소로 변환
       kfree(v);
-      *pte = 0;
-    }
-  }
-  return newsz;
+      *pte = 0; //엔트리 0으로 초기화, pte가 있을 경우
+      lru_delete(v, pgdir, (char*)a);
+   } else {
+	int offset = *pte >> 1;
+	if (check_bitmap(offset)) {
+		set_bitmap(offset, 0);
+		*pte = 0;	
+	}		   
+   } 
+ }
+  return newsz; 
 }
 
 // Free a page table and all the physical memory pages
@@ -318,35 +332,68 @@ clearpteu(pde_t *pgdir, char *uva)
 // Given a parent process's page table, create a copy
 // of it for a child.
 pde_t*
-copyuvm(pde_t *pgdir, uint sz)
+copyuvm(pde_t *pgdir, uint sz) //검토 완
 {
+	
   pde_t *d;
   pte_t *pte;
+  //pte_t *temp_pte;
   uint pa, i, flags;
   char *mem;
-	cprintf("start copyuvm...\n");
-  if((d = setupkvm()) == 0)
+  if((d = setupkvm()) == 0) //child의 pgdir값 생성
     return 0;
-  for(i = 0; i < sz; i += PGSIZE){
+
+  for(i = 0; i < sz; i += PGSIZE) {
     if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
       panic("copyuvm: pte should exist");
-    if(!(*pte & PTE_P))
-      panic("copyuvm: page not present");
-    pa = PTE_ADDR(*pte);
-    flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto bad;
-    memmove(mem, (char*)P2V(pa), PGSIZE);
-    if(mappages(d, (void*)i, PGSIZE, V2P(mem), flags) < 0) {
-      kfree(mem);
-      goto bad;
+
+    if(!(*pte & PTE_P)) { //원래는 panic... 근데 PTE_P가 0이더라도 SWAP 된 경우 처리 필요
+	int offset = (*pte) >> 1;
+	if (check_bitmap(offset)) {
+		mem = kalloc();
+		swapread(mem, offset);
+		
+		int blkno = find_bitmap();
+		if (blkno == -1) {
+			cprintf("OOM ERROR\n");
+			goto bad;
+		}
+		swapwrite(mem, blkno);
+		set_bitmap(blkno, 1);
+
+		if (mappages(d, (void*)i, PGSIZE, V2P(mem), 0) < 0) {
+			kfree(mem);
+			goto bad;
+		}
+		pte_t *temp = walkpgdir(d, (void*)i, 0);
+		*temp = blkno << 1;
+		kfree(mem);
+				
+	} else {
+		panic("copyuvm: pte not present");
+	}
+    } else {
+	
+	pa = PTE_ADDR(*pte);
+	flags = PTE_FLAGS(*pte);
+	if ((mem = kalloc()) == 0)
+		goto bad;
+
+	memmove(mem, (char*)P2V(pa), PGSIZE); //페이지 값 옮기기
+
+      //panic("copyuvm: page not present");
+    	if(mappages(d, (void*)i, PGSIZE, V2P(mem), flags) < 0) {
+      		kfree(mem);
+      		goto bad;
+    	} //매핑 완료
+	lru_insert(mem, d, (char*)i);
     }
-  }
+  }		
   return d;
 
 bad:
   freevm(d);
-  return 0;
+  return 0; 
 }
 
 //PAGEBREAK!
@@ -397,261 +444,118 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
 //PAGEBREAK!
 // Blank page.
 
-uint mmap(uint addr, int length, int prot, int flags, int fd, int offset) {
 
-  //initialize variables
-  int base_addr;
-  struct proc *p;
-  struct file *f;
-  pde_t *d;
-  char *mem;
-  uint pnum, mid;
+int
+print_len() {
+	int len;
+	struct page *temp;
+	struct page *first;
 
-  //process & page table
-  p = myproc();
-  d = p->pgdir;
-
-  //error case
-  if (((flags & MAP_ANONYMOUS) != MAP_ANONYMOUS) && fd == -1) {
-     return -1;
-  } else if ((fd != -1) && (((prot & PROT_READ) != p->ofile[fd]->readable))) {
-    return -1;
-  } else if (fd != -1 && ((prot & PROT_WRITE) == PROT_WRITE)) {
-	if (p->ofile[fd]->writable == 0)
-		return -1; 	  
-  } 
-  if ((addr % PGSIZE) != 0) {
-	  return 0;
-  }
-  //normal case
- 
-  for (mid = 0; mid < 64; mid++) {
-    if (mmap_area_arr[mid].addr == 0) { //empty mmap area pointer
-      mmap_area_arr[mid].f = p->ofile[fd];
-      mmap_area_arr[mid].p = p;
-      mmap_area_arr[mid].addr = MMAPBASE + addr;
-      mmap_area_arr[mid].length = length;
-      mmap_area_arr[mid].offset = offset;
-      mmap_area_arr[mid].prot = prot;
-      mmap_area_arr[mid].flags = flags;
-      //cprintf("original : %d\n", mmap_area_arr[mid].addr);
-      break;
-    }
-  }
-
-  //deal with flags
-  base_addr = MMAPBASE + addr;
-  if (flags == 0) { //if flag is 0, no map populate, no anonymous. so only record map areas.
-    return base_addr;
-
-  } else if (flags & MAP_POPULATE) { // if flag is map populate, connect virtual memory and physical memory with page table.
-    for (pnum = 0; pnum < length; pnum += PGSIZE) {
-      mem = kalloc();
-      if (mem == 0) { //failed to allocate page
-	return -1;
-
-      }
-
-      if (flags & MAP_ANONYMOUS) { //if flag is map populate and map anonymous, physical page is set 0.
-        memset(mem, 0, PGSIZE);
-
-      } else {
-        //read file data from file pointer
-        f = p->ofile[fd] ;
-        f->off = offset;
-        fileread(f, mem, PGSIZE);
-      }
-
-      //mapping virtual address and physical pages
-	int pte_flag;
-	
-	//cprintf("flag result is %d\n", prot & PROT_READ);
-	
-        if (prot & PROT_WRITE)
-		pte_flag = PTE_W | PTE_P | PTE_U;
-	else
-		pte_flag = PTE_P | PTE_U;	
-	
-	//cprintf("map addr : %x", base_addr+pnum);
-	
-	//cprintf("pte_flag : %d\n", pte_flag);
-	//cprintf("i'm mappages///\n");
-      if (mappages(d, (void*)(base_addr + pnum), PGSIZE, V2P(mem), pte_flag) < 0) {
-          kfree(mem);
-          return -1;
-      }
-
-      //cprintf("mem addr : %x\n", mem);
-    }
-  }
-
-  return base_addr;
-
-}
-
-void forkmmap(struct proc *p1, struct proc *p2) {
-	//cprintf("enter forkmmap..\n");	
-	//p1 : curproc, p2 : np
-	uint mid;
-	int fparr[64] = {-1};
-	int fpid = 0;
-	int fzarr[64] = {-1};
-	int fzid = 0;
-	//cprintf("first addr is %d \n", mmap_area_arr[0].addr);
-
-	for (mid = 0; mid < 64; mid++) {
-		if (mmap_area_arr[mid].addr != 0 && mmap_area_arr[mid].p == p1) {
-			fparr[fpid] = mid;
-			fpid++;
-
-		} else if (mmap_area_arr[mid].addr == 0) {
-			fzarr[fzid] = mid;
-			fzid++;	
+	len = 0;
+	first = page_lru_head;
+	temp = page_lru_head;
+	while (1) {
+		len += 1;
+		temp = temp->next;
+		//cprintf("len is %d\n", len);
+		if (first == temp) 
+			break;
 		}
-				
-	}
-	//cprintf("fp is : %d, fz is : %d\n", fp, fz);
-	int fz = 0;
-	int fp = 0;
-	if (fparr[0] != -1 && fzarr[0] != -1) {
-	    	for (int zid = 0, pid = 0; zid < fzid && pid < fpid; zid++, pid++) {
-			fz = fzarr[zid];
-			fp = fparr[pid];
-			mmap_area_arr[fz].f = mmap_area_arr[fp].f;
-			mmap_area_arr[fz].addr = mmap_area_arr[fp].addr;
-			mmap_area_arr[fz].length = mmap_area_arr[fp].length;
-			mmap_area_arr[fz].offset = mmap_area_arr[fp].offset;
-			mmap_area_arr[fz].prot = mmap_area_arr[fp].prot;
-			mmap_area_arr[fz].flags = mmap_area_arr[fp].flags;
-			mmap_area_arr[fz].p = p2;
-			
-			struct mmap_area mmarea = mmap_area_arr[fz];
-			
-			if (mmarea.flags & MAP_POPULATE) {
-				char* mem;
-				for (uint pnum = 0; pnum < mmarea.length; pnum += PGSIZE) {
-					mem = kalloc();
-					if (mmarea.flags & MAP_ANONYMOUS) {
-						memset(mem, 0, PGSIZE);	
-					} else {
-						struct file *f = mmarea.f;
-						f->off = mmarea.offset;
-						fileread(f, mem, PGSIZE);	
-					}
 
-					int pte_flag;
-					if (mmarea.prot & PROT_WRITE)
-						pte_flag = PTE_W | PTE_P | PTE_U;
-					else
-						pte_flag = PTE_P | PTE_U;
-
-					if (mappages(mmarea.p->pgdir, (void*)(mmarea.addr + pnum), PGSIZE, V2P(mem), pte_flag) < 0)
-						kfree(mem);
-				//cprintf("fork success...\n");
-					
-				}	
-			}
-		}
-	}
-	return;	
-}
-
-int munmap(int addr) {
-	uint mid;
-	if (((addr-0x40000000) % PGSIZE) != 0) {
-		return 0;
+	return num_lru_pages;
 	}
 
-	//cprintf("hi ~ I'm munmap!\n");
-	for (mid = 0; mid < 64; mid++) {
-		if (mmap_area_arr[mid].addr != 0) {
+char*
+swapout() {
+    pte_t *pte;
+    uint flags;
+    uint pa;
+    int blkno;
+    uint find = 0;
+
+    struct page *temp = page_lru_head;
+    if (num_lru_pages == 0)
+        return 0;
+
+    while (find == 0) {
+        pte = walkpgdir(temp->pgdir, (void*)temp->vaddr, 0);
+        pa = PTE_ADDR(*pte);
+        flags = PTE_FLAGS(*pte);
+
+        if (flags & PTE_A) {
+            *pte &= ~PTE_A;
+            page_lru_head = temp->next;
+        } else {
 		
-			struct mmap_area mmarea = mmap_area_arr[mid];
-			if (mmarea.addr == addr && mmarea.p == myproc()) {
-				//cprintf("addr : %x\n", addr);
-				memset(&mmap_area_arr[mid], 0, sizeof(mmap_area_arr[mid]));
-				struct proc *p = mmarea.p;
-				pde_t *d = p->pgdir;
-				int base_addr = addr;
-				pte_t *pte;
+            blkno = find_bitmap();
+            if (blkno == -1) {
+                return 0;
+            }
+            set_bitmap(blkno, 1);
+            *pte = blkno << 1;
+	    
+            swapwrite((char*)P2V(pa), blkno);
+            lru_delete((char*)P2V(pa), temp->pgdir, temp->vaddr);
+            find = 1;
+        }
+        temp = temp->next;
+    }
 
-				for (int pnum = 0; pnum < mmarea.length; pnum += PGSIZE) {
-					pte = walkpgdir(d, (void*)(base_addr+pnum), 0);
-					if (*pte & PTE_P) {
-						uint pa = PTE_ADDR(*pte);
-						char* va = P2V(pa);
-						memset(va, 1, PGSIZE);
-						kfree(va);
-						
-						*pte = 0;
-					}		
-				}
-
-				return 1;			
-			}	
-		}		
-	}
-	//cprintf("I'm not exited..\n");	
-	return -1;
+    return (char*)P2V(pa);
 }
 
-int pfhandler(struct trapframe *tf) {
-	uint fault_addr = rcr2();
-	//uint read = tf->err & 2;
-	uint write = (tf->err & 2) == 1;
-	uint mid;
-	//cprintf("i'm page fault handler..\n");
-	//cprintf("fault addr : %x\n", fault_addr);
-	for (mid = 0; mid < 64; mid++) {
+void swapin(struct proc *p, uint vaddr) {
+    pde_t *d;
+    d = p->pgdir;
+    pte_t *pte = walkpgdir(d, (void*)vaddr, 0);
+    uint offset = (uint)*pte;
 
-		if (mmap_area_arr[mid].addr != 0) {
-			struct mmap_area mmarea = mmap_area_arr[mid];
+    if (!(offset & PTE_P)) {
+        offset = offset >> 1;
+        char* mem = kalloc();
+        swapread(mem, offset);
+        set_bitmap(offset, 0);
 
-			if (mmarea.addr <= fault_addr && fault_addr < (mmarea.addr + mmarea.length) && mmarea.p == myproc()) {
-				//cprintf("start addr : %x\n", mmarea.addr);
-				//cprintf("end addr : %x\n", mmarea.addr + mmarea.length);
-				if (write && !((mmarea.prot & PROT_WRITE) == PROT_WRITE))
-					return -1;
-				
-				int base_addr = fault_addr;
-				//cprintf("allocated\n");
+        *pte = V2P(mem) | PTE_U | PTE_W | PTE_P;
+        lru_insert(mem, d, (char*)vaddr);
+    }
+}
 
-				char* mem = kalloc();
-				//cprintf("after allocated\n");
-				memset(mem, 0, PGSIZE);
-				//cprintf("mem setting..\n");
-				if (!(mmarea.flags & MAP_ANONYMOUS)) {
-					//cprintf("before file..\n");
-					struct file *f = mmarea.f;
-					f->off = mmarea.offset;
-					//cprintf("before before file..\n");
-					fileread(f, mem, PGSIZE);				
-					
-				}
-				pde_t *d = mmarea.p->pgdir;
-				//cprintf("after dic..\n");
-				//cprintf("page dic setting...\n");
-				int pte_flag;
-				if (mmarea.prot & PROT_WRITE)
-					pte_flag = PTE_W | PTE_P | PTE_U;	
-				else
-					pte_flag = PTE_P | PTE_U;
-				
-				//cprintf("before mappage\n");
+void set_bitmap(int blkno, int swap_flag) {
+    if (bitmap == 0) {
+        bitmap = kalloc();
+        memset(bitmap, 0, PGSIZE);
+    }
+    int idx = blkno / 8;
+    int pos = blkno % 8;
 
-				if (mappages(d, (void*)base_addr, PGSIZE, V2P(mem), pte_flag) < 0) {
-					kfree(mem);
-					return -1;
-					
-				}
-				//cprintf("after mappage\n");
-				//cprintf("pf handler process succeed!!\n");
-
-				return 0;			
-			}
-		} 
+    if (swap_flag) {
+        bitmap[idx] = bitmap[idx] | (1 << pos);
+    } else {
+        bitmap[idx] = bitmap[idx] & (~(1 << pos));
+    }
+    //swap 될때 1로 바꾸고, swap in 될때 다시 0으로 세팅
+}
+int find_bitmap() {
+    for (int i = 0; i < PGSIZE; i++) {
+        if (bitmap[i] != 0xFF) {
+            for (int j = 0; j < 8; j++) {
+                if (!(bitmap[i] & (1 << j))) {
+                    return i * 8 + j;
+                }
+            }
+        }
+    }
+    return -1;
+}
+int check_bitmap(int blkno) {
+	if (bitmap == 0) {
+		bitmap = kalloc();
+		memset(bitmap, 0, PGSIZE);
+			
 	}
+	int idx = blkno / 8;
+	int pos = blkno % 8;
 
-	
-	return -1;
+	return (bitmap[idx] & (1 << pos)) ? 1 : 0;
 	}

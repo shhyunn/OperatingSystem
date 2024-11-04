@@ -95,7 +95,7 @@ struct segdesc {
 #define PTE_W           0x002   // Writeable
 #define PTE_U           0x004   // User
 #define PTE_PS          0x080   // Page Size
-
+#define PTE_A		0x20
 // Address in page table or page directory entry
 #define PTE_ADDR(pte)   ((uint)(pte) & ~0xFFF)
 #define PTE_FLAGS(pte)  ((uint)(pte) &  0xFFF)
@@ -177,5 +177,14 @@ struct gatedesc {
   (gate).p = 1;                                           \
   (gate).off_31_16 = (uint)(off) >> 16;                  \
 }
+
+struct page{
+	struct page *next;
+	struct page *prev;
+	pde_t *pgdir;
+	char *vaddr;
+};
+
+
 
 #endif

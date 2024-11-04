@@ -7,7 +7,6 @@
 #include "proc.h"
 #include "spinlock.h"
 
-
 struct {
   struct spinlock lock;
   struct proc proc[NPROC];
@@ -18,7 +17,6 @@ static struct proc *initproc;
 int nextpid = 1;
 extern void forkret(void);
 extern void trapret(void);
-extern void forkmmap(struct proc *p1, struct proc *p2);
 
 static void wakeup1(void *chan);
 
@@ -124,7 +122,7 @@ userinit(void)
 {
   struct proc *p;
   extern char _binary_initcode_start[], _binary_initcode_size[];
-
+  //cprintf("start userinit...\n");
   p = allocproc();
   
   initproc = p;
@@ -185,12 +183,12 @@ fork(void)
   int i, pid;
   struct proc *np;
   struct proc *curproc = myproc();
-
+  //cprintf("hi~ i'm fork\n");
   // Allocate process.
   if((np = allocproc()) == 0){
     return -1;
   }
-
+  //cprintf("after allocproc..\n");
   // Copy process state from proc.
   if((np->pgdir = copyuvm(curproc->pgdir, curproc->sz)) == 0){
     kfree(np->kstack);
@@ -198,6 +196,7 @@ fork(void)
     np->state = UNUSED;
     return -1;
   }
+  //cprintf("after copyuvm...\n");
   np->sz = curproc->sz;
   np->parent = curproc;
   *np->tf = *curproc->tf;
@@ -213,45 +212,13 @@ fork(void)
   safestrcpy(np->name, curproc->name, sizeof(curproc->name));
 
   pid = np->pid;
-  forkmmap(curproc, np);
 
-  /*
-  struct mmap_area *mmarea;
-  for (int mid = 0; mid < 64; mid++) {
-	if (mmap_area_arr[mid] != 0 && mmap_area_arr[mid]->p == curproc) {
-		mmarea = (struct mmap_area *)kalloc();
-		struct mmap_area *ex_mmarea = mmap_area_arr[mid];
-		mmarea->f = ex_mmarea->f;
-		mmarea->p = np;
-		mmarea->addr = ex_mmarea->addr;
-		mmarea->length = ex_mmarea->length;
-		mmarea->offset = ex_mmarea->offset;
-		mmarea->prot = ex_mmarea->prot;
-		mmarea->flags = ex_mmarea->flags;
-		
-		break; 	
-	}	  
-  }
-  int id;
-
-  for (id = 0; id < 64; id++) {
-	if (mmap_area_arr[id] == 0) {
-		break;	
-	}	  
-  }
-  
-  mmap_area_arr[id] = mmarea;
-
-
-
-
-*/
   acquire(&ptable.lock);
 
   np->state = RUNNABLE;
 
   release(&ptable.lock);
-
+  //cprintf("end of fork...\n");
   return pid;
 }
 
@@ -404,8 +371,9 @@ sched(void)
 
   if(!holding(&ptable.lock))
     panic("sched ptable.lock");
-  if(mycpu()->ncli != 1)
+  if(mycpu()->ncli != 1) {
     panic("sched locks");
+  }
   if(p->state == RUNNING)
     panic("sched running");
   if(readeflags()&FL_IF)
@@ -566,5 +534,3 @@ procdump(void)
     cprintf("\n");
   }
 }
-
-

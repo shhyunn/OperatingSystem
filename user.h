@@ -23,8 +23,9 @@ int getpid(void);
 char* sbrk(int);
 int sleep(int);
 int uptime(void);
-uint mmap(uint, int, int, int, int, int);
-int munmap(int);
+void swapread(const char*, int);
+void swapwrite(const char*, int);
+void swapstat(int*, int*);
 int freemem(void);
 
 // ulib.c

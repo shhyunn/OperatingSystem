@@ -8,13 +8,12 @@
 #include "traps.h"
 #include "spinlock.h"
 
-// Interrupt descriptor table (shared by all CPUs)
-extern int pfhandler(struct trapframe *tf);
+// Interrupt descriptor table (shared by all CPUs).
 struct gatedesc idt[256];
 extern uint vectors[];  // in vectors.S: array of 256 entry pointers
 struct spinlock tickslock;
 uint ticks;
-
+extern void swapin();
 void
 tvinit(void)
 {
@@ -78,13 +77,10 @@ trap(struct trapframe *tf)
             cpuid(), tf->cs, tf->eip);
     lapiceoi();
     break;
-
-    //page fault handler
-  case T_PGFLT:
-    if (pfhandler(tf) < 0) {
-      myproc()->killed = 1;
-    }
-    break;
+   case T_PGFLT:
+   	//cprintf("page fault!!\n");
+	swapin(myproc(), rcr2());
+	break;
 
   //PAGEBREAK: 13
   default:

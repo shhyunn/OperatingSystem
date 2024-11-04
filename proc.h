@@ -56,18 +56,3 @@ struct proc {
 //   original data and bss
 //   fixed-size stack
 //   expandable heap
-
-struct mmap_area {
-	struct file *f;
-	uint addr;
-	int length;
-	int offset;
-	int prot;
-	int flags;
-	struct proc *p;
-	
-	};
-
-extern struct mmap_area mmap_area_arr[64];
-
-
