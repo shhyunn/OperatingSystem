@@ -41,6 +41,15 @@ MIT에서 개발한 유닉스 계열 교육용 운영체제로, 멀티프로세�
     
 - Project 4: Virtual Memory
   - 설명: Virtual Memory를 관리하는 mmap, munmmap system call 함수와 page fault시 처리하는 page fault handler를 구현한다.
+  - 구현 내용:
+    - kalloc.c:
+      - freemem: 할당한 메모리를 할당 해제하는 함수 추가
+        
+    - vm.c:
+      - mmap: 메모리를 할당받는 함수 추가
+      - forkmmap: process fork시 부모 프로세스의 할당 메모리를 복사하는 함수 추가
+      - munmap: 매핑 해제하는 함수 추가
+      - pfhandler: page fault 발생시, fault address를 이용하여 플래그 설정
     
 - Project 5: Page Replacement
   - 설명: LRU 방식으로 페이지 교체 알고리즘을 구현한다.
