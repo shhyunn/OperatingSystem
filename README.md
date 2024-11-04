@@ -53,3 +53,29 @@ MIT에서 개발한 유닉스 계열 교육용 운영체제로, 멀티프로세�
     
 - Project 5: Page Replacement
   - 설명: LRU 방식으로 페이지 교체 알고리즘을 구현한다.
+  - 구현 내용:
+     - fs.c:
+       - swapread: backing store에서 메인메모리로 페이지 이동하는 함수 추가
+       - swapwrite: 메인 메모리에서 backing store로 페이지 이동하는 함수 추가
+         
+    - kalloc.c:
+      - freeranges: page의 가상주소도 free page로 추가하도록 수정
+      - kalloc: freelist가 없다면 swapout 함수를 실행하여 페이지 교체 진행
+      - lru_insert: lru 방식으로 페이지 삽입
+      - lru_delete: lru 방식으로 페이지 삭제
+        
+    - sysfile.c
+      - sys_swapread
+      - sys_swapwrite
+      - sys_swapstat
+        
+    - vm.c
+      - inituvm: vm 초기화시 lru_insert 실행하도록 수정
+      - allocuvm: vm 할당시 lru_insert 실행하도록 수정
+      - deallocuvm: vm 할당 삭제시 lru_delete로 페이지 삭제하도록 수정
+      - copyuvm: vm 복사시 backing store에 있을 경우 swapread 후 swapwrite 하도록 수정
+      - swapout: backingstore로 swapout, lru에서 해당 페이지 삭제하도록 추가
+      - swapin: 메모리를 할당받아 backing store에 있는 페이지 메인 메모리로 읽어오기, Lru 리스트에 추가
+      - set_bitmap: swap 여부를 확인할 수 있는 bitmap 세팅하는 함수 추가
+      - find_bitmap: 페이지에 맞는 비트를 찾는 함수 추가
+
