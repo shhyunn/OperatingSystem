@@ -20,7 +20,7 @@ main(void)
   dup(0);  // stderr
 
   for(;;){
-    printf(1, "init: starting sh\n");
+    printf(1, "init: starting sh\nStudent ID: 2021310932\nName: Sohyun Lim\npa1: Booting xv6\n");
     pid = fork();
     if(pid < 0){
       printf(1, "init: fork failed\n");

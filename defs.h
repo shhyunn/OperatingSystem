@@ -120,6 +120,11 @@ void            userinit(void);
 int             wait(void);
 void            wakeup(void*);
 void            yield(void);
+int		getpname(int);
+int		getnice(int);
+int		setnice(int, int);
+void		ps(int);
+
 
 // swtch.S
 void            swtch(struct context**, struct context*);
@@ -164,6 +169,7 @@ void            idtinit(void);
 extern uint     ticks;
 void            tvinit(void);
 extern struct spinlock tickslock;
+extern int 	totalticks;
 
 // uart.c
 void            uartinit(void);
